@@ -1,6 +1,7 @@
 from i3pystatus.file import File
 from i3pystatus import Module
 from i3pystatus.core.command import run_through_shell
+import glob
 import shutil
 
 
@@ -19,13 +20,17 @@ class Backlight(File):
 
     settings = (
         ("format", "format string, formatters: brightness, max_brightness, percentage"),
-        ("backlight", "backlight, see `/sys/class/backlight/`"),
+        ("format_no_backlight", "format string when no backlight file available"),
+        ("backlight",
+            "backlight, see `/sys/class/backlight/`. Supports glob expansion, i.e. `*` matches anything. "
+            "If it matches more than one filename, selects the first one in alphabetical order"),
         "color",
     )
     required = ()
 
-    backlight = "acpi_video0"
+    backlight = "*"
     format = "{brightness}/{max_brightness}"
+    format_no_backlight = "No backlight"
 
     base_path = "/sys/class/backlight/{backlight}/"
     components = {
@@ -40,6 +45,14 @@ class Backlight(File):
 
     def init(self):
         self.base_path = self.base_path.format(backlight=self.backlight)
+        backlight_entries = sorted(glob.glob(self.base_path))
+
+        if len(backlight_entries) == 0:
+            self.run = self.run_no_backlight
+            super().init()
+            return
+
+        self.base_path = backlight_entries[0]
         self.has_xbacklight = shutil.which("xbacklight") is not None
 
         # xbacklight expects a percentage as parameter. Calculate the percentage
@@ -54,6 +67,23 @@ class Backlight(File):
                 else:
                     self.step_size = 5  # default?
         super().init()
+
+    def run_no_backlight(self):
+        cdict = {
+            "brightness": -1,
+            "max_brightness": -1,
+            "percentage": -1
+        }
+
+        format = self.format_no_backlight
+        if not format:
+            format = self.format
+
+        self.data = cdict
+        self.output = {
+            "full_text": format.format(**cdict),
+            "color": self.color
+        }
 
     def lighter(self):
         if self.has_xbacklight:

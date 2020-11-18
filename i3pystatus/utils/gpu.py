@@ -1,12 +1,22 @@
 import subprocess
 from collections import namedtuple
+from typing import Optional
 
 GPUUsageInfo = namedtuple('GPUUsageInfo', ['total_mem', 'avail_mem', 'used_mem',
                                            'temp', 'percent_fan',
                                            'usage_gpu', 'usage_mem'])
 
 
-def query_nvidia_smi() -> GPUUsageInfo:
+def _convert_nvidia_smi_value(value) -> Optional[int]:
+    value = value.lower()
+    # If value contains 'not' or 'N/A' - it is not supported for this GPU
+    # (in fact, for now nvidia-smi returns '[Not Supported]' or '[N/A]' depending of its version)
+    if "not" in value or "n/a" in value:
+        return None
+    return int(value)
+
+
+def query_nvidia_smi(gpu_number) -> GPUUsageInfo:
     """
     :return:
         all memory fields are in megabytes,
@@ -34,10 +44,9 @@ def query_nvidia_smi() -> GPUUsageInfo:
     except subprocess.CalledProcessError:
         raise Exception("nvidia-smi call failed")
 
-    output = output.decode('utf-8').strip()
+    output = output.decode('utf-8').split("\n")[gpu_number].strip()
     values = output.split(", ")
 
-    # If value contains 'not' - it is not supported for this GPU (in fact, for now nvidia-smi returns '[Not Supported]')
-    values = [None if ("not" in value.lower()) else int(value) for value in values]
+    values = [_convert_nvidia_smi_value(value) for value in values]
 
     return GPUUsageInfo(*values)

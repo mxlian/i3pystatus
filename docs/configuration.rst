@@ -123,40 +123,15 @@ Also change your i3wm config to the following:
 .. note:: Don't name your config file ``i3pystatus.py``, as it would
     make ``i3pystatus`` un-importable and lead to errors.
 
-.. _credentials:
+Another way to launch your configuration file is to use ``i3pystatus`` script
+from installation:
 
-Credentials
------------
+.. code:: bash
 
-Settings that require credentials can utilize the keyring module to
-keep sensitive information out of config files.  To take advantage of
-this feature, simply use the ``i3pystatus-setting-util`` script
-installed along i3pystatus to set the credentials for a module. Once
-this is done you can add the module to your config without specifying
-the credentials, e.g.:
+    i3pystatus -c ~/.path/to/your/config/file.py
 
-.. code:: python
-
-    # Use the default keyring to retrieve credentials.
-    # To determine which backend is the default on your system, run
-    # python -c 'import keyring; print(keyring.get_keyring())'
-    status.register('github')
-
-If you don't want to use the default you can set a specific keyring like so:
-
-.. code:: python
-
-    # Requires the keyrings.alt package
-    from keyrings.alt.file import PlaintextKeyring
-    status.register('github', keyring_backend=PlaintextKeyring())
-
-i3pystatus will locate and set the credentials during the module
-loading process. Currently supported credentials are "password",
-"email" and "username".
-
-.. note:: Credential handling requires the PyPI package
-   ``keyring``. Many distributions have it pre-packaged available as
-   ``python-keyring``.
+If no arguments were provided, ``i3pystatus`` script works as an example of
+``Clock`` module.
 
 Formatting
 ----------
@@ -237,7 +212,7 @@ Setting a specific logfile
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When instantiating your ``Status`` object, the path to a log file can be
-specified. If this is done, then log messages will be sent to that file and not
+specified (it accepts environment variables). If this is done, then log messages will be sent to that file and not
 to an ``.i3pystatus-<pid-of-thread>`` file in your home directory.  This is
 useful in that it helps keep your home directory from becoming cluttered with
 files containing errors.
@@ -246,7 +221,7 @@ files containing errors.
 
     from i3pystatus import Status
 
-    status = Status(logfile='/home/username/var/i3pystatus.log')
+    status = Status(logfile='$HOME/var/i3pystatus.log')
 
 Changing log format
 ~~~~~~~~~~~~~~~~~~~
@@ -310,13 +285,29 @@ happens. What happens is defined by these settings for each module
 individually:
 
 - ``on_leftclick``
+- ``on_doubleleftclick``
 - ``on_rightclick``
+- ``on_doublerightclick``
 - ``on_upscroll``
 - ``on_downscroll``
 
 The global default action for all settings is ``None`` (do nothing),
 but many modules define other defaults, which are documented in the
 module reference.
+
+.. note::
+    Each of these callbacks, when triggered, will call the module's ``run()``
+    function (typically only called each time the module's interval is
+    reached). If there are things in the ``run()`` function of your module
+    which you do not want to be executed every time a mouse event is triggered,
+    then consider using threading to perform the module update, and manually
+    sleep for the module's interval between updates. You can start the update
+    thread in the module's ``init()`` function. The ``run()`` function can then
+    either just update the module's displayed text, or simply do nothing (if
+    your update thread also handles updating the display text). See the
+    `weather module`_ for an example of this method.
+
+    .. _`weather module`: https://github.com/enkore/i3pystatus/blob/82fc9fb/i3pystatus/weather/__init__.py#L244-L265
 
 The values you can assign to these four settings can be divided to following
 three categories:
@@ -382,6 +373,24 @@ If ``self`` is needed to access the calling module, the
         # or
         on_rightclick = change_text,
         )
+
+If the module your attaching the callback too is not a subclass of
+:py:class:`.IntervalModule` you will need to invoke ``init()``.
+using :py:class:`.Uname` as an example, the following code would suffice.
+
+.. code:: python
+
+    from i3pystatus import get_module
+
+    @get_module
+    def sys_info(self):
+        if self.format == "{nodename}":
+                self.format = "{sysname} {release} on {machine}"
+            else:
+                self.format = "{nodename}"
+            self.init()
+
+    status.register("uname", format="{nodename}", on_rightclick=sys_info)
 
 You can also create callbacks with parameters.
 
@@ -451,6 +460,8 @@ Some possible uses for these attributes are:
     align the text if its width is shorter than `minimal_width`.
 *   `separator` and `separator_block_width` can be used to remove the
     vertical bar that is separating modules.
+*   `background` can be used to set an alternative background color for the
+    module. supports RGBA if your i3bar version does.
 *   `markup` can be set to `"none"` or `"pango"`.
     `Pango markup
     <https://developer.gnome.org/pango/stable/PangoMarkupFormat.html>`_
@@ -529,3 +540,115 @@ then you can refresh the bar by using the following command:
         pkill -SIGUSR1 -f "python /home/user/.config/i3/pystatus.py"
 
 Note that the path must be expanded if using '~'.
+
+.. _internet:
+
+Internet Connectivity
+---------------------
+
+Module methods that ``@require(internet)`` won't be run unless a test TCP
+connection is successful. By default, this is made to Google's DNS server, but
+you can customize the host and port. See :py:class:`.internet`.
+
+If you are behind a gateway that redirects web traffic to an authorization page
+and blocks other traffic, the DNS check will return a false positive. This is
+often encountered in open WiFi networks. In these cases it is helpful to try a
+service that is not traditionally required for web browsing:
+
+.. code:: python
+
+  from i3pystatus import Status
+
+  status = Status(check_internet=("whois.arin.net", 43))
+
+.. code:: python
+
+  from i3pystatus import Status
+
+  status = Status(check_internet=("github.com", 22))
+
+.. _credentials:
+
+Credentials
+-----------
+
+For modules which require credentials, i3pystatus supports credential
+management using the keyring_ module from PyPI.
+
+.. important::
+    Many distributions have keyring_ pre-packaged, available as
+    ``python-keyring``. Unless you have KWallet_ or SecretService_ available,
+    you will also most likely need to install keyrings.alt_, which contains
+    additional keyring backends for use by the keyring_ module.
+
+    Both i3pystatus and ``i3pystatus-setting-util`` will abort with a
+    RuntimeError_ if keyring_ isinstalled but a usable keyring backend is not
+    present, so it is a good idea to install both if you plan to use a module
+    which supports credential handling.
+
+To store credentials in a keyring, use the ``i3pystatus-setting-util`` script
+installed along i3pystatus.
+
+.. note::
+    ``i3pystatus-setting-util`` will store credentials using the default
+    keyring backend. The method for determining which backend is the default
+    can be found :ref:`below <default-keyring-backend>`. If, for some reason,
+    it is necessary to use a keyring other than the default, then you will need
+    to override the default in your keyringrc.cfg_ for
+    ``i3pystatus-setting-util`` to successfully use it.
+
+Once you have successfully set up credentials, you can add the module to your
+config file without specifying the credentials in the registration, e.g.:
+
+.. code:: python
+
+    # Use the default keyring to retrieve credentials
+    status.register('github')
+
+i3pystatus will locate and set the credentials during the module loading
+process. Currently supported credentials are ``password``, ``email`` and
+``username``.
+
+.. _default-keyring-backend:
+
+.. note::
+    To determine which backend is the default on your system, run the
+    following:
+
+    .. code-block:: bash
+
+        python -c 'import keyring; print(keyring.get_keyring())'
+
+    If this command returns a ``keyring.backends.fail.Keyring`` object, none of
+    the keyrings supported out-of-the box by the keyring_ module are available,
+    and you will need to install the keyrings.alt_ Python module. keyrings.alt_
+    provides an encrypted keyring which will be seen as the default if both
+    keyrings.alt_ and keyring_ are installed, and none of the keyrings
+    supported by keyring_ are present:
+
+    .. code-block:: bash
+
+        $ python -c 'import keyring; print(keyring.get_keyring())'
+        <EncryptedKeyring at /home/username/.local/share/python_keyring/crypted_pass.cfg>
+
+If the keyring backend you used to store credentials using
+``i3pystatus-setting-util`` is not the default, then you can change which
+keyring backend i3pystatus will use in one of two ways:
+
+#. Override the default in your keyringrc.cfg_
+
+#. Import and instantiate a keyring backend class, and pass it as the
+   ``keyring_backend`` parameter when registering the module:
+
+   .. code:: python
+
+       # Requires the keyrings.alt package
+       from keyrings.alt.file import PlaintextKeyring
+       status.register('github', keyring_backend=PlaintextKeyring())
+
+.. _KWallet: http://www.kde.org/
+.. _SecretService: https://specifications.freedesktop.org/secret-service/re01.html
+.. _RuntimeError: https://docs.python.org/3/library/exceptions.html#RuntimeError
+.. _keyring: https://pypi.python.org/pypi/keyring
+.. _keyrings.alt: https://pypi.python.org/pypi/keyrings.alt
+.. _keyringrc.cfg: http://pythonhosted.org/keyring/#customize-your-keyring-by-config-file

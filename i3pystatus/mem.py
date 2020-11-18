@@ -1,5 +1,5 @@
 from i3pystatus import IntervalModule
-from psutil import virtual_memory
+import psutil
 from .core.util import round_dict
 
 
@@ -42,19 +42,17 @@ class Mem(IntervalModule):
     )
 
     def run(self):
-        memory_usage = virtual_memory()
-        used = memory_usage.used - memory_usage.cached - memory_usage.buffers
+        memory_usage = psutil.virtual_memory()
 
         if memory_usage.percent >= self.alert_percentage:
             color = self.alert_color
-
         elif memory_usage.percent >= self.warn_percentage:
             color = self.warn_color
         else:
             color = self.color
 
         cdict = {
-            "used_mem": used / self.divisor,
+            "used_mem": max(0, memory_usage.used) / self.divisor,
             "avail_mem": memory_usage.available / self.divisor,
             "total_mem": memory_usage.total / self.divisor,
             "percent_used_mem": memory_usage.percent,

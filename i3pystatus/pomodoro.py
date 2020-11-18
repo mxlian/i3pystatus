@@ -1,10 +1,12 @@
-import os
 import subprocess
-import locale
-
 from datetime import datetime, timedelta
-
 from i3pystatus import IntervalModule
+from i3pystatus.core.desktop import DesktopNotification
+
+
+STOPPED = 0
+RUNNING = 1
+BREAK = 2
 
 
 class Pomodoro(IntervalModule):
@@ -14,6 +16,16 @@ class Pomodoro(IntervalModule):
 
     Left click starts/restarts timer.
     Right click stops it.
+
+    Example color settings.
+
+    .. code-block:: python
+
+        color_map = {
+            'stopped': '#2ECCFA',
+            'running': '#FFFF00',
+            'break': '#37FF00'
+        }
     """
 
     settings = (
@@ -25,13 +37,22 @@ class Pomodoro(IntervalModule):
         ('long_break_duration', 'Long break duration in seconds'),
         ('short_break_count', 'Short break count before first long break'),
         ('format', 'format string, available formatters: current_pomodoro, '
-                   'total_pomodoro, time')
+                   'total_pomodoro, time'),
+        ('inactive_format', 'format string to display when no timer is running'),
+        ('color', 'dictionary containing a mapping of statuses to colours')
     )
-    required = ('sound',)
 
-    color_stopped = '#2ECCFA'
-    color_running = '#FFFF00'
-    color_break = '#37FF00'
+    inactive_format = 'Start Pomodoro'
+
+    color_map = {
+        'stopped': '#2ECCFA',
+        'running': '#FFFF00',
+        'break': '#37FF00'
+    }
+
+    color = None
+    sound = None
+
     interval = 1
     short_break_count = 3
     format = '☯ {current_pomodoro}/{total_pomodoro} {time}'
@@ -45,65 +66,68 @@ class Pomodoro(IntervalModule):
 
     def init(self):
         # state could be either running/break or stopped
-        self.state = 'stopped'
-        self.breaks = 0
+        self.state = STOPPED
+        self.current_pomodoro = 0
+        self.total_pomodoro = self.short_break_count + 1  # and 1 long break
         self.time = None
 
+        if self.color is not None and type(self.color) == dict:
+            self.color_map.update(self.color)
+
     def run(self):
-        if self.time and datetime.now() >= self.time:
-            if self.state == 'running':
-                self.state = 'break'
-                if self.breaks == self.short_break_count:
-                    self.time = datetime.now() + \
+        if self.time and datetime.utcnow() >= self.time:
+            if self.state == RUNNING:
+                self.state = BREAK
+                if self.current_pomodoro == self.short_break_count:
+                    self.time = datetime.utcnow() + \
                         timedelta(seconds=self.long_break_duration)
-                    self.breaks = 0
                 else:
-                    self.time = datetime.now() + \
+                    self.time = datetime.utcnow() + \
                         timedelta(seconds=self.break_duration)
-                    self.breaks += 1
                 text = 'Go for a break!'
             else:
-                self.state = 'running'
-                self.time = datetime.now() + \
+                self.state = RUNNING
+                self.time = datetime.utcnow() + \
                     timedelta(seconds=self.pomodoro_duration)
                 text = 'Back to work!'
+                self.current_pomodoro = (self.current_pomodoro + 1) % self.total_pomodoro
             self._alarm(text)
 
-        if self.state == 'running' or self.state == 'break':
-            min, sec = divmod((self.time - datetime.now()).total_seconds(), 60)
+        if self.state == RUNNING or self.state == BREAK:
+            min, sec = divmod((self.time - datetime.utcnow()).total_seconds(), 60)
             text = '{:02}:{:02}'.format(int(min), int(sec))
-            color = self.color_running if self.state == 'running' else self.color_break
-        else:
-            self.output = {
-                'full_text': 'Stopped',
-                'color': self.color_stopped
+            sdict = {
+                'time': text,
+                'current_pomodoro': self.current_pomodoro + 1,
+                'total_pomodoro': self.total_pomodoro
             }
-            return
 
-        sdict = {
-            'time': text,
-            'current_pomodoro': self.breaks,
-            'total_pomodoro': self.short_break_count + 1,
-        }
-        self.data = sdict
+            color = self.color_map['running'] if self.state == RUNNING else self.color_map['break']
+            text = self.format.format(**sdict)
+        else:
+            text = self.inactive_format
+            color = self.color_map['stopped']
+
         self.output = {
-            'full_text': self.format.format(**sdict),
+            'full_text': text,
             'color': color
         }
 
     def start(self):
-        self.state = 'running'
-        self.time = datetime.now() + timedelta(seconds=self.pomodoro_duration)
-        self.breaks = 0
+        self.state = RUNNING
+        self.time = datetime.utcnow() + timedelta(seconds=self.pomodoro_duration)
+        self.current_pomodoro = 0
 
     def stop(self):
-        self.state = 'stopped'
+        self.state = STOPPED
         self.time = None
 
     def _alarm(self, text):
-        subprocess.call(['notify-send',
-                         'Alarm!',
-                         text])
-        subprocess.Popen(['aplay',
-                          self.sound,
-                          '-q'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        notification = DesktopNotification(title='Alarm!', body=text)
+        notification.display()
+
+        if self.sound is not None:
+            subprocess.Popen(['aplay',
+                              self.sound,
+                              '-q'],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

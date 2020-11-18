@@ -1,6 +1,13 @@
+import errno
 import os
 import locale
-import time
+from datetime import datetime
+
+try:
+    import pytz
+    HAS_PYTZ = True
+except ImportError:
+    HAS_PYTZ = False
 
 from i3pystatus import IntervalModule
 
@@ -9,7 +16,10 @@ class Clock(IntervalModule):
     """
     This class shows a clock.
 
-    format can be passed in four different ways:
+    .. note:: Optionally requires `pytz` for time zone data when using time
+        zones other than local time.
+
+    Format can be passed in four different ways:
 
     - single string, no timezone, just the strftime-format
     - one two-tuple, first is the format, second the timezone
@@ -52,7 +62,6 @@ class Clock(IntervalModule):
     format = None
     color = "#ffffff"
     interval = 1
-    current_format_id = 0
     on_upscroll = ["scroll_format", 1]
     on_downscroll = ["scroll_format", -1]
 
@@ -70,7 +79,7 @@ class Clock(IntervalModule):
             lang = (None, None)
 
         if lang != locale.getlocale(locale.LC_TIME):
-            # affects time.strftime() in whole program
+            # affects language of *.strftime() in whole program
             locale.setlocale(locale.LC_TIME, lang)
 
         if self.format is None:
@@ -84,46 +93,66 @@ class Clock(IntervalModule):
         elif isinstance(self.format, str) or isinstance(self.format, tuple):
             self.format = [self.format]
 
-        self._local_tzname = self._get_local_tz()
-        self._non_daylight_zone = time.tzname[0]
-        self.format = self.expand_formats(self.format)
+        self.system_tz = self._get_system_tz()
+        self.format = [self._expand_format(fmt) for fmt in self.format]
+        self.current_format_id = 0
 
-    @staticmethod
-    def _get_local_tz():
+    def _expand_format(self, fmt):
+        if isinstance(fmt, tuple):
+            if len(fmt) == 1:
+                return (fmt[0], None)
+            else:
+                if not HAS_PYTZ:
+                    raise RuntimeError("Need `pytz` for timezone data")
+                return (fmt[0], pytz.timezone(fmt[1]))
+        return (fmt, self.system_tz)
+
+    def _get_system_tz(self):
         '''
-        Returns a string representing localtime, suitable for setting localtime
-        using time.tzset().
+        Get the system timezone for use when no timezone is explicitly provided
 
-        https://docs.python.org/3/library/time.html#time.tzset
+        Requires pytz, if not available then no timezone will be set when not
+        explicitly provided.
         '''
-        hours_offset = time.timezone / 3600.0
-        plus_minus = '+' if hours_offset >= 0 else '-'
-        hh = int(hours_offset)
-        mm = 60 * (hours_offset % 1)
-        return '%s%s%02d:%02d%s' % (time.tzname[0], plus_minus,
-                                    hh, mm, time.tzname[1])
+        if not HAS_PYTZ:
+            return None
 
-    @staticmethod
-    def expand_formats(formats):
-        def expand_format(format_):
-            if isinstance(format_, tuple):
-                # check if timezone exists (man tzset)
-                if len(format_) > 1 and os.path.isfile('/usr/share/zoneinfo/' + format_[1]):
-                    return (format_[0], format_[1])
-                else:
-                    return (format_[0], None)
-            return (format_, None)
+        def _etc_localtime():
+            try:
+                with open('/etc/localtime', 'rb') as fp:
+                    return pytz.tzfile.build_tzinfo('system', fp)
+            except OSError as exc:
+                if exc.errno != errno.ENOENT:
+                    self.logger.error(
+                        'Unable to read from /etc/localtime: %s', exc.strerror
+                    )
+            except pytz.UnknownTimeZoneError:
+                self.logger.error(
+                    '/etc/localtime contains unrecognized tzinfo'
+                )
+            return None
 
-        return [expand_format(format_) for format_ in formats]
+        def _etc_timezone():
+            try:
+                with open('/etc/timezone', 'r') as fp:
+                    tzname = fp.read().strip()
+                return pytz.timezone(tzname)
+            except OSError as exc:
+                if exc.errno != errno.ENOENT:
+                    self.logger.error(
+                        'Unable to read from /etc/localtime: %s', exc.strerror
+                    )
+            except pytz.UnknownTimeZoneError:
+                self.logger.error(
+                    '/etc/timezone contains unrecognized timezone \'%s\'',
+                    tzname
+                )
+            return None
+
+        return _etc_localtime() or _etc_timezone()
 
     def run(self):
-        # set timezone
-        target_tz = self.format[self.current_format_id][1]
-        if target_tz is None and time.tzname[0] != self._non_daylight_zone \
-                or target_tz is not None and time.tzname[0] != target_tz:
-            new_tz = self._local_tzname if target_tz is None else target_tz
-            os.environ.putenv('TZ', new_tz)
-            time.tzset()
+        time = datetime.now(self.format[self.current_format_id][1])
 
         self.output = {
             "full_text": time.strftime(self.format[self.current_format_id][0]),

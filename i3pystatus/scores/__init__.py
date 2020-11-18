@@ -45,11 +45,29 @@ class ScoresBackend(SettingsBase):
         try:
             with urlopen(url) as content:
                 try:
+                    if content.url != url:
+                        self.logger.debug('Request to %s was redirected to %s',
+                                          url, content.url)
                     content_type = dict(content.getheaders())['Content-Type']
+                    mime_type = content_type.split(';')[0].lower()
+                    if 'json' not in mime_type:
+                        self.logger.debug('Response from %s is not JSON',
+                                          content.url)
+                        return {}
                     charset = re.search(r'charset=(.*)', content_type).group(1)
                 except AttributeError:
                     charset = 'utf-8'
-                response = json.loads(content.read().decode(charset))
+                response_json = content.read().decode(charset).strip()
+                if not response_json:
+                    self.logger.debug('JSON response from %s was blank', url)
+                    return {}
+                try:
+                    response = json.loads(response_json)
+                except json.decoder.JSONDecodeError as exc:
+                    self.logger.error('Error loading JSON: %s', exc)
+                    self.logger.debug('JSON text that failed to load: %s',
+                                      response_json)
+                    return {}
                 self.logger.log(5, 'API response: %s', response)
                 return response
         except HTTPError as exc:
@@ -58,7 +76,7 @@ class ScoresBackend(SettingsBase):
                 exc.code, exc.reason, exc.url,
             )
             return {}
-        except URLError as exc:
+        except (ConnectionResetError, URLError) as exc:
             self.logger.critical('Error making request to %s: %s', url, exc)
             return {}
 
@@ -107,7 +125,7 @@ class ScoresBackend(SettingsBase):
         except (TypeError, ValueError):
             return 0
 
-    def get_nested(self, data, expr, callback=None, default=None):
+    def get_nested(self, data, expr, callback=None, default=''):
         if callback is None:
             def callback(x):
                 return x
@@ -323,6 +341,7 @@ class Scores(Module):
 
     settings = (
         ('backends', 'List of backend instances'),
+        ('interval', 'Update interval (in seconds)'),
         ('favorite_icon', 'Value for the ``{away_favorite}`` and '
                           '``{home_favorite}`` formatter when the displayed game '
                           'is being played by a followed team'),
@@ -412,7 +431,7 @@ class Scores(Module):
                 with self.condition:
                     self.condition.wait(self.interval)
                 self.check_scores(force='scheduled')
-        except:
+        except Exception:
             msg = 'Exception in {thread} at {time}, module {name}'.format(
                 thread=threading.current_thread().name,
                 time=time.strftime('%c'),

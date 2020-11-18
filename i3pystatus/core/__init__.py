@@ -9,6 +9,7 @@ from i3pystatus.core.imputil import ClassFinder
 from i3pystatus.core.modules import Module
 
 DEFAULT_LOG_FORMAT = '%(asctime)s [%(levelname)-8s][%(name)s %(lineno)d] %(message)s'
+log = logging.getLogger(__name__)
 
 
 class CommandEndpoint:
@@ -58,18 +59,23 @@ class Status:
     :param bool click_events: Enable click events, if `standalone` is True.
     :param str logfile: Path to log file that will be used by i3pystatus.
     :param tuple internet_check: Address of server that will be used to check for internet connection by :py:class:`.internet`.
+    :param keep_alive: If True, modules that define the keep_alive flag will not be put to sleep when the status bar is hidden.
+    :param dictionary default_hints: Dictionary of default hints to apply to all modules. Can be overridden at a module level.
     """
 
     def __init__(self, standalone=True, click_events=True, interval=1,
                  input_stream=None, logfile=None, internet_check=None,
-                 logformat=DEFAULT_LOG_FORMAT):
+                 keep_alive=False, logformat=DEFAULT_LOG_FORMAT,
+                 default_hints=None):
         self.standalone = standalone
+        self.default_hints = default_hints
         self.click_events = standalone and click_events
         input_stream = input_stream or sys.stdin
         logger = logging.getLogger("i3pystatus")
         if logfile:
             for handler in logger.handlers:
                 logger.removeHandler(handler)
+            logfile = os.path.expandvars(logfile)
             handler = logging.FileHandler(logfile, delay=True)
             logger.addHandler(handler)
             logger.setLevel(logging.CRITICAL)
@@ -81,7 +87,7 @@ class Status:
 
         self.modules = util.ModuleList(self, ClassFinder(Module))
         if self.standalone:
-            self.io = io.StandaloneIO(self.click_events, self.modules, interval)
+            self.io = io.StandaloneIO(self.click_events, self.modules, keep_alive, interval)
             if self.click_events:
                 self.command_endpoint = CommandEndpoint(
                     self.modules,
@@ -105,22 +111,25 @@ class Status:
         if not module:
             return
 
+        # Merge the module's hints with the default hints
+        # and overwrite any duplicates with the hint from the module
+        hints = self.default_hints.copy() if self.default_hints else {}
+        hints.update(kwargs.get('hints', {}))
+        if hints:
+            kwargs['hints'] = hints
+
         try:
             return self.modules.append(module, *args, **kwargs)
-        except ImportError as import_error:
-            if import_error.name and not import_error.path and isinstance(module, str):
-                # This is a package/module not found exception raised by importing a module on-the-fly
-                return self.modules.append(Text(
-                    color="#FF0000",
-                    text="{i3py_mod}: Missing Python module '{missing_module}'".format(
-                        i3py_mod=module,
-                        missing_module=import_error.name)))
-            else:
-                raise import_error
-        except ConfigError as configuration_error:
+        except Exception as e:
+            log.exception(e)
             return self.modules.append(Text(
                 color="#FF0000",
-                text=configuration_error.message))
+                text="{i3py_mod}: Fatal Error - {ex}({msg})".format(
+                    i3py_mod=module,
+                    ex=e.__class__.__name__,
+                    msg=e
+                )
+            ))
 
     def run(self):
         """

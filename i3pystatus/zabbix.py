@@ -21,11 +21,17 @@ class Zabbix(IntervalModule):
         ("zabbix_user", "Zabbix API User"),
         ("zabbix_password", "Zabbix users password"),
         ("interval", "Update interval"),
+        ("groups", "Provide groupids(e.g ['102', '10'])"),
+        ("filter", "Provide API-Filter(e.g {'status': '1'})"),
+        ("min_severity", "Specify min severity (0-5)"),
         "format"
     )
 
     required = ("zabbix_server", "zabbix_user", "zabbix_password")
     interval = 60
+    groups = None
+    filter = None
+    min_severity = 2
     format = "{default}"
 
     def run(self):
@@ -36,10 +42,12 @@ class Zabbix(IntervalModule):
             zapi.login(self.zabbix_user, self.zabbix_password)
             triggers = zapi.trigger.get(only_true=1,
                                         skipDependent=1,
+                                        groupids=self.groups,
                                         monitored=1,
                                         active=1,
-                                        min_severity=2,
+                                        min_severity=self.min_severity,
                                         output=["priority"],
+                                        filter=self.filter,
                                         withLastEventUnacknowledged=1,
                                         )
             alerts_list = [t['priority'] for t in triggers]
@@ -55,7 +63,10 @@ class Zabbix(IntervalModule):
 
             cdict["default"] = "{0}:{a[5]}/{a[4]}/{a[3]}/{a[2]}/{a[1]}/{a[0]}".format(sum(alerts), a=alerts)
             cdict["total"] = sum(alerts)
-            color = alerts_color[max(map(int, alerts_list))]
+            if alerts_list:
+                color = alerts_color[max(map(int, alerts_list))]
+            else:
+                color = alerts_color[0]
             result = self.format.format(**cdict)
 
         except Exception as e:

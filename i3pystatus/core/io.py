@@ -1,9 +1,11 @@
 import json
 import signal
 import sys
+
 from contextlib import contextmanager
 from threading import Condition
 from threading import Thread
+from i3pystatus.core.modules import IntervalModule
 
 
 class IOHandler:
@@ -54,10 +56,13 @@ class StandaloneIO(IOHandler):
 
     n = -1
     proto = [
-        {"version": 1, "click_events": True}, "[", "[]", ",[]",
+        {
+            "version": 1,
+            "click_events": True,
+        }, "[", "[]", ",[]",
     ]
 
-    def __init__(self, click_events, modules, interval=1):
+    def __init__(self, click_events, modules, keep_alive, interval=1):
         """
         StandaloneIO instance must be created in main thread to be able to set
         the SIGUSR1 signal handler.
@@ -68,10 +73,18 @@ class StandaloneIO(IOHandler):
         self.modules = modules
 
         self.proto[0]['click_events'] = click_events
+
+        if keep_alive:
+            self.proto[0].update(dict(stop_signal=signal.SIGUSR2,
+                                      cont_signal=signal.SIGUSR2))
+            signal.signal(signal.SIGUSR2, self.suspend_signal_handler)
+
         self.proto[0] = json.dumps(self.proto[0])
 
         self.refresh_cond = Condition()
         self.treshold_interval = 20.0
+
+        self.stopped = False
         signal.signal(signal.SIGUSR1, self.refresh_signal_handler)
 
     def read(self):
@@ -141,6 +154,26 @@ class StandaloneIO(IOHandler):
                 module.run()
 
         self.async_refresh()
+
+    def suspend_signal_handler(self, signo, frame):
+        """
+        By default, i3bar sends SIGSTOP to all children when it is not visible (for example, the screen
+        sleeps or you enter full screen mode). This stops the i3pystatus process and all threads within it.
+        For some modules, this is not desirable. Thankfully, the i3bar protocol supports setting the "stop_signal"
+        and "cont_signal" key/value pairs in the header to allow sending a custom signal when these events occur.
+
+        Here we use SIGUSR2 for both "stop_signal" and "cont_signal" and maintain a toggle to determine whether
+        we have just been stopped or continued. When we have been stopped, notify the IntervalModule managers
+        that they should suspend any module that does not set the keep_alive flag to a truthy value, and when we
+        have been continued, notify the IntervalModule managers that they can resume execution of all modules.
+        """
+        if signo != signal.SIGUSR2:
+            return
+        self.stopped = not self.stopped
+        if self.stopped:
+            [m.suspend() for m in IntervalModule.managers.values()]
+        else:
+            [m.resume() for m in IntervalModule.managers.values()]
 
 
 class JSONIO:

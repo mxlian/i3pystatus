@@ -41,7 +41,7 @@ class Bitcoin(IntervalModule):
     * {bid_price}
     * {daily_average}
     * {volume}
-    * {volume_thousend}
+    * {volume_thousand}
     * {volume_percent}
     * {age}
     * {status}
@@ -89,6 +89,7 @@ class Bitcoin(IntervalModule):
 
     def _get_age(self, bitcoinaverage_timestamp):
         with setlocale('C'):  # Deal with locales (months name differ)
+#<<<<<<< HEAD
             if isinstance(bitcoinaverage_timestamp, int):
                 utc_tstamp = datetime.fromtimestamp(bitcoinaverage_timestamp)
             else:
@@ -102,13 +103,27 @@ class Bitcoin(IntervalModule):
 
     def _query_api(self, api_url, extras):
         url = "{}{}".format(api_url, extras)
+#=======
+#            # Assume format is always utc, to avoid import pytz
+#            diff = datetime.utcnow() - \
+#                datetime.fromtimestamp(bitcoinaverage_timestamp)
+#        return int(diff.total_seconds())
+#
+#    def _query_api(self, api_url):
+#        url = "{}BTC{}".format(api_url, self.currency.upper())
+#>>>>>>> upstream/master
         response = urllib.request.urlopen(url).read().decode("utf-8")
         return json.loads(response)
 
     def _fetch_price_data(self):
         if self.exchange is None:
+#<<<<<<< HEAD
             api_url = "https://apiv2.bitcoinaverage.com/ticker/global/"
             return self._query_api(api_url, self.currency.upper())
+#=======
+#            api_url = "https://apiv2.bitcoinaverage.com/indices/global/ticker/"
+#            return self._query_api(api_url)
+#>>>>>>> upstream/master
         else:
             api_url = "https://apiv2.bitcoinaverage.com/exchanges/"
             ret = self._query_api(api_url, self.exchange)
@@ -136,12 +151,17 @@ class Bitcoin(IntervalModule):
 
         fdict = {
             "symbol": self.symbol,
-            "daily_average": price_data["24h_avg"],
+            "daily_average": price_data["averages"]["day"],
             "ask_price": price_data["ask"],
             "bid_price": price_data["bid"],
             "last_price": price_data["last"],
+#<<<<<<< HEAD
             "volume": price_data["volume_btc"],
             "volume_thousend": price_data["volume_btc"] / 1000.,
+#=======
+#            "volume": price_data["volume"],
+#            "volume_thousand": float(price_data["volume"]) / 1000,
+#>>>>>>> upstream/master
             "volume_percent": price_data["volume_percent"],
             "age": self._get_age(price_data['timestamp'])
         }

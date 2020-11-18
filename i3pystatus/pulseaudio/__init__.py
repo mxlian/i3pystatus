@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 
@@ -14,6 +15,22 @@ class PulseAudio(Module, ColorRangeModule):
     - Requires amixer for toggling mute and incrementing/decrementing volume on scroll.
     - Depends on the PyPI colour module - https://pypi.python.org/pypi/colour/0.0.5
 
+    .. rubric:: Example configuration
+
+    The example configuration below uses only unicode to display the volume (tested with otf-font-awesome)
+
+    .. code-block:: python
+
+        status.register(
+            "pulseaudio",
+            color_unmuted='#aa3300,
+            color_muted='#aa0500',
+            format_muted='\uf6a9',
+            format='{volume_bar}',
+            vertical_bar_width=1,
+            vertical_bar_glyphs=['\uf026  ', '\uf027 ', '\uf028']
+        )
+
     .. rubric:: Available formatters
 
     * `{volume}` — volume in percent (0...100)
@@ -21,28 +38,38 @@ class PulseAudio(Module, ColorRangeModule):
       (the literal value for -infinity is `-∞`)
     * `{muted}` — the value of one of the `muted` or `unmuted` settings
     * `{volume_bar}` — unicode bar showing volume
+    * `{selected}` — show the format_selected string if selected sink is the configured one
     """
 
     settings = (
         "format",
         ("format_muted", "optional format string to use when muted"),
+        ("format_selected", "string used to mark this sink if selected"),
         "muted", "unmuted",
         "color_muted", "color_unmuted",
         ("step", "percentage to increment volume on scroll"),
+        ("sink", "sink name to use, None means pulseaudio default"),
+        ("move_sink_inputs", "Move all sink inputs when we change the default sink"),
         ("bar_type", "type of volume bar. Allowed values are 'vertical' or 'horizontal'"),
         ("multi_colors", "whether or not to change the color from "
                          "'color_muted' to 'color_unmuted' based on volume percentage"),
-        ("vertical_bar_width", "how many characters wide the vertical volume_bar should be")
+        ("vertical_bar_width", "how many characters wide the vertical volume_bar should be"),
+        ('vertical_bar_glyphs', 'custom array output as vertical bar instead of unicode bars')
     )
 
     muted = "M"
     unmuted = ""
     format = "♪: {volume}"
     format_muted = None
+    format_selected = " 🗸"
     currently_muted = False
     has_amixer = False
     color_muted = "#FF0000"
     color_unmuted = "#FFFFFF"
+    vertical_bar_glyphs = None
+
+    sink = None
+    move_sink_inputs = True
 
     step = 5
     multi_colors = False
@@ -83,16 +110,18 @@ class PulseAudio(Module, ColorRangeModule):
     def request_update(self, context):
         """Requests a sink info update (sink_info_cb is called)"""
         pa_operation_unref(pa_context_get_sink_info_by_name(
-            context, self.sink.encode(), self._sink_info_cb, None))
+            context, self.current_sink.encode(), self._sink_info_cb, None))
 
     def success_cb(self, context, success, userdata):
         pass
 
     @property
-    def sink(self):
-        self.sinks = subprocess.Popen(['pactl', 'list', 'short', 'sinks'],
-                                      stdout=subprocess.PIPE,
-                                      universal_newlines=True).stdout.read().splitlines()
+    def current_sink(self):
+        if self.sink is not None:
+            return self.sink
+
+        self.sinks = subprocess.check_output(['pactl', 'list', 'short', 'sinks'],
+                                             universal_newlines=True).splitlines()
         bestsink = None
         state = 'DEFAULT'
         for sink in self.sinks:
@@ -136,7 +165,7 @@ class PulseAudio(Module, ColorRangeModule):
 
         self.request_update(context)
 
-    def sink_info_cb(self, context, sink_info_p, _, __):
+    def sink_info_cb(self, context, sink_info_p, eol, _):
         """Updates self.output"""
         if sink_info_p:
             sink_info = sink_info_p.contents
@@ -162,11 +191,19 @@ class PulseAudio(Module, ColorRangeModule):
                 output_format = self.format
 
             if self.bar_type == 'vertical':
-                volume_bar = make_vertical_bar(volume_percent, self.vertical_bar_width)
+                volume_bar = make_vertical_bar(volume_percent, self.vertical_bar_width, glyphs=self.vertical_bar_glyphs)
             elif self.bar_type == 'horizontal':
                 volume_bar = make_bar(volume_percent)
             else:
                 raise Exception("bar_type must be 'vertical' or 'horizontal'")
+
+            selected = ""
+            dump = subprocess.check_output("pacmd dump".split(), universal_newlines=True)
+            for line in dump.split("\n"):
+                if line.startswith("set-default-sink"):
+                    default_sink = line.split()[1]
+                    if default_sink == self.current_sink:
+                        selected = self.format_selected
 
             self.output = {
                 "color": color,
@@ -174,28 +211,40 @@ class PulseAudio(Module, ColorRangeModule):
                     muted=muted,
                     volume=volume_percent,
                     db=volume_db,
-                    volume_bar=volume_bar),
+                    volume_bar=volume_bar,
+                    selected=selected),
             }
 
-    def change_sink(self):
-        curr_sink = self.sink
-        sinks = list(s.split()[1] for s in self.sinks)
-        next_sink = (sinks.index(curr_sink) + 1) % len(sinks)
+            self.send_output()
+        elif eol < 0:
+            self.output = None
+            self.send_output()
 
-        sink_inputs = subprocess.Popen("pacmd list-sink-inputs".split(),
-                                       stdout=subprocess.PIPE,
-                                       universal_newlines=True).stdout.read()
-        for input_index in re.findall('index:\s+(\d+)', sink_inputs):
-            command = "pacmd move-sink-input {} {}".format(input_index, sinks[next_sink])
-            subprocess.Popen(command.split(),
-                             stdout=subprocess.PIPE)
-        subprocess.Popen("pacmd set-default-sink {}".format(sinks[next_sink]).split())
+    def change_sink(self):
+        sinks = list(s.split()[1] for s in self.sinks)
+        if self.sink is None:
+            next_sink = sinks[(sinks.index(self.current_sink) + 1) %
+                              len(sinks)]
+        else:
+            next_sink = self.current_sink
+
+        if self.move_sink_inputs:
+            sink_inputs = subprocess.check_output("pacmd list-sink-inputs".split(),
+                                                  universal_newlines=True)
+            for input_index in re.findall(r'index:\s+(\d+)', sink_inputs):
+                command = "pacmd move-sink-input {} {}".format(input_index, next_sink)
+
+                # Not all applications can be moved and pulseaudio, and when
+                # this fail pacmd print error messaging
+                with open(os.devnull, 'w') as devnull:
+                    subprocess.call(command.split(), stdout=devnull)
+        subprocess.call("pacmd set-default-sink {}".format(next_sink).split())
 
     def switch_mute(self):
-        subprocess.Popen(['pactl', 'set-sink-mute', self.sink, "toggle"])
+        subprocess.call(['pactl', '--', 'set-sink-mute', self.current_sink, "toggle"])
 
     def increase_volume(self):
-        subprocess.Popen(['pactl', 'set-sink-volume', self.sink, "+%s%%" % self.step])
+        subprocess.call(['pactl', '--', 'set-sink-volume', self.current_sink, "+%s%%" % self.step])
 
     def decrease_volume(self):
-        subprocess.Popen(['pactl', 'set-sink-volume', self.sink, "-%s%%" % self.step])
+        subprocess.call(['pactl', '--', 'set-sink-volume', self.current_sink, "-%s%%" % self.step])

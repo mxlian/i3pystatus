@@ -7,7 +7,14 @@ __author__ = 'facetoe'
 class OpenVPN(IntervalModule):
     """
     Monitor OpenVPN connections.
-    Currently only supports systems that use Systemd.
+
+    .. note::
+        This module currently only supports systemd. Additionally, as of
+        OpenVPN 2.4 the unit names have changed, as the OpenVPN server and
+        client now have distinct unit files (``openvpn-server@.service`` and
+        ``openvpn-client@.service``, respectively). Those who have updated to
+        OpenVPN 2.4 will need to manually set the ``status_command``,
+        ``vpn_up_command``, and ``vpn_down_command``.
 
     Formatters:
 
@@ -23,8 +30,13 @@ class OpenVPN(IntervalModule):
     status_up = '▲'
     status_down = '▼'
     format = "{vpn_name} {status}"
-    status_command = "bash -c 'systemctl show openvpn@%(vpn_name)s | grep ActiveState=active'"
 
+    use_new_service_name = False
+    status_command = "bash -c 'systemctl show openvpn@%(vpn_name)s | grep ActiveState=active'"
+    vpn_up_command = "sudo /bin/systemctl start openvpn@%(vpn_name)s.service"
+    vpn_down_command = "sudo /bin/systemctl stop openvpn@%(vpn_name)s.service"
+
+    connected = False
     label = ''
     vpn_name = ''
 
@@ -35,6 +47,9 @@ class OpenVPN(IntervalModule):
         ("status_down", "Symbol to display when down"),
         ("status_up", "Symbol to display when up"),
         ("vpn_name", "Name of VPN"),
+        ("use_new_service_name", "Use new openvpn service names (openvpn 2.4^)"),
+        ("vpn_up_command", "Command to bring up the VPN - default requires editing /etc/sudoers"),
+        ("vpn_down_command", "Command to bring up the VPN - default requires editing /etc/sudoers"),
         ("status_command", "command to find out if the VPN is active"),
     )
 
@@ -42,16 +57,29 @@ class OpenVPN(IntervalModule):
         if not self.vpn_name:
             raise Exception("vpn_name is required")
 
+        if self.use_new_service_name:
+            self.status_command = "bash -c 'systemctl show openvpn-client@%(vpn_name)s | grep ActiveState=active'"
+            self.vpn_up_command = "sudo /bin/systemctl start openvpn-client@%(vpn_name)s.service"
+            self.vpn_down_command = "sudo /bin/systemctl stop openvpn-client@%(vpn_name)s.service"
+
+    def toggle_connection(self):
+        if self.connected:
+            command = self.vpn_down_command
+        else:
+            command = self.vpn_up_command
+        run_through_shell(command % {'vpn_name': self.vpn_name}, enable_shell=True)
+
+    def on_click(self, button, **kwargs):
+        self.toggle_connection()
+
     def run(self):
         command_result = run_through_shell(self.status_command % {'vpn_name': self.vpn_name}, enable_shell=True)
-        output = command_result.out.strip()
+        self.connected = True if command_result.out.strip() else False
 
-        if output:
-            color = self.color_up
-            status = self.status_up
+        if self.connected:
+            color, status = self.color_up, self.status_up
         else:
-            color = self.color_down
-            status = self.status_down
+            color, status = self.color_down, self.status_down
 
         vpn_name = self.vpn_name
         label = self.label
