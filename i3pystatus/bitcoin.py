@@ -124,6 +124,28 @@ class Bitcoin(IntervalModule):
 #            api_url = "https://apiv2.bitcoinaverage.com/indices/global/ticker/"
 #            return self._query_api(api_url)
 #>>>>>>> upstream/master
+        elif self.exchange is 'bitstamp':
+            api_url = "https://www.bitstamp.net/api/v2/ticker/"
+            symbol = f'BTC{self.currency}'.lower()
+            ret = self._query_api(api_url, symbol)
+            exchange = ret
+            # Adapt values to global ticker format
+            exchange['symbol'] = symbol.upper()
+            exchange['volume_btc'] = float(ret['volume'])
+            exchange['volume_percent'] = None
+            exchange['24h_avg'] = None
+            exchange['averages'] = {"day":ret['vwap']}  # Vol weighted average
+            # Timestamp is returned in local tizmeone, we need to discount
+            # ofset to UTC
+            offset = round((datetime.now()-datetime.utcnow()).total_seconds())
+            exchange['timestamp'] = int(ret['timestamp']) - offset
+            exchange['high'] = float(ret['high'])
+            exchange['low'] = float(ret['low'])
+            exchange['last'] = float(ret['last'])
+            exchange['bid'] = float(ret['bid'])
+            exchange['ask'] = float(ret['ask'])
+            exchange['open'] = float(ret['open'])
+            return exchange
         else:
             api_url = "https://apiv2.bitcoinaverage.com/exchanges/"
             ret = self._query_api(api_url, self.exchange)
